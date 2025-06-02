@@ -57,6 +57,6 @@
     "dev": "npm run build && npm run wrangler:wrapper && npx wrangler dev",
     "predeploy": "npm run db:migrate:remote",
     "preview": "npm run build && npm run wrangler:wrapper && wrangler dev",
-    "wrangler:wrapper": "echo F | xcopy src\\workflows\\wrapper.js dist\\index.js /Y"
+    "wrangler:wrapper": "echo F | cp src\\workflows\\wrapper.js dist\\index.js /Y"
   }
 }
