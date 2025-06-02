@@ -203,7 +203,7 @@ export function HeroSearch() {
           <div className="relative w-full h-full">
             <iframe
               className="w-full h-full object-cover"
-              src={`https://www.youtube.com/embed/${currentResult.youtube_video_id}?autoplay=${isPlaying ? 1 : 0}&mute=${isMuted ? 1 : 0}&start=${Math.floor(currentResult.start_time_seconds)}&controls=0&showinfo=0&rel=0&modestbranding=1&loop=1&playlist=${currentResult.youtube_video_id}`}
+              src={`https://www.youtube.com/embed/${currentResult.youtube_video_id}?autoplay=${isPlaying ? 1 : 0}&mute=${isMuted ? 0 : 0}&start=${Math.floor(currentResult.start_time_seconds)}&controls=0&showinfo=0&rel=0&modestbranding=0&loop=1&playlist=${currentResult.youtube_video_id}`}
               frameBorder="0"
               allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
               allowFullScreen
