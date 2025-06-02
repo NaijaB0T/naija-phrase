@@ -1,0 +1,404 @@
+---
+import { Youtube, Clock, AlertCircle, CheckCircle, X } from 'lucide-react';
+import Layout from '@/layouts/Layout.astro';
+
+const { DB } = Astro.locals.runtime.env;
+
+// Get videos with their search terms and counts
+const videosQuery = `
+  SELECT 
+    v.*,
+    st.term_text as search_term,
+    COUNT(vp.id) as phrase_count
+  FROM videos v
+  LEFT JOIN search_terms st ON st.id = v.search_term_id
+  LEFT JOIN video_phrases vp ON vp.video_id = v.id
+  GROUP BY v.id
+  ORDER BY v.created_at DESC
+  LIMIT 50
+`;
+
+const videos = await DB.prepare(videosQuery).all();
+
+// Get counts for different statuses
+const statusCounts = await DB.prepare(`
+  SELECT 
+    processing_status,
+    COUNT(*) as count
+  FROM videos 
+  GROUP BY processing_status
+`).all();
+
+const failedCount = statusCounts.results?.filter(s => s.processing_status.startsWith('Error')).reduce((sum, s) => sum + s.count, 0) || 0;
+const pendingCount = statusCounts.results?.find(s => s.processing_status === 'Pending Subtitle Processing')?.count || 0;
+const processedCount = statusCounts.results?.find(s => s.processing_status === 'Subtitles Processed')?.count || 0;
+
+const getStatusIcon = (status: string) => {
+  switch (status) {
+    case 'Subtitles Processed': return CheckCircle;
+    case 'Processing Subtitles': return Clock;
+    case 'Error - No Subtitles': return AlertCircle;
+    default: return Clock;
+  }
+};
+
+const getStatusColor = (status: string) => {
+  switch (status) {
+    case 'Subtitles Processed': return 'text-green-600';
+    case 'Processing Subtitles': return 'text-blue-600';
+    case 'Error - No Subtitles': return 'text-red-600';
+    default: return 'text-gray-600';
+  }
+};
+---
+
+<Layout title="Videos - Admin">
+  <div class="space-y-6">
+    <div class="flex items-center justify-between">
+      <div>
+        <h1 class="text-3xl font-bold tracking-tight">Discovered Videos</h1>
+        <p class="text-muted-foreground mt-2">
+          YouTube videos found through search term discovery
+        </p>
+      </div>
+      <div class="flex flex-col sm:flex-row items-start sm:items-center gap-3">
+        <div class="flex flex-wrap items-center gap-2">
+          {failedCount > 0 && (
+            <button 
+              id="retry-all-btn"
+              class="text-sm bg-orange-600 text-white px-4 py-2 rounded hover:bg-orange-700 transition-colors flex items-center gap-1"
+            >
+              <span>Retry All Failed ({failedCount})</span>
+            </button>
+          )}
+          {pendingCount > 0 && (
+            <button 
+              id="process-all-btn"
+              class="text-sm bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 transition-colors flex items-center gap-1"
+            >
+              <span>Process All Pending ({pendingCount})</span>
+            </button>
+          )}
+        </div>
+        <div class="text-sm text-muted-foreground">
+          <div class="flex flex-wrap gap-4">
+            <span>Total: {videos.results?.length || 0}</span>
+            <span class="text-green-600">Processed: {processedCount}</span>
+            {pendingCount > 0 && <span class="text-blue-600">Pending: {pendingCount}</span>}
+            {failedCount > 0 && <span class="text-red-600">Failed: {failedCount}</span>}
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid gap-4">
+      {videos.results?.length === 0 ? (
+        <div class="text-center py-12">
+          <Youtube class="h-12 w-12 mx-auto text-muted-foreground mb-4" />
+          <h3 class="text-lg font-semibold mb-2">No videos discovered yet</h3>
+          <p class="text-muted-foreground">
+            Add search terms in the admin dashboard to start discovering videos.
+          </p>
+        </div>
+      ) : (
+        videos.results?.map((video) => {
+          const StatusIcon = getStatusIcon(video.processing_status);
+          return (
+            <div key={video.id} class="border rounded-lg p-4">
+              <div class="flex gap-4">
+                <img
+                  src={video.thumbnail_url}
+                  alt={video.title}
+                  class="w-32 h-24 object-cover rounded flex-shrink-0"
+                />
+                <div class="flex-1 min-w-0">
+                  <h3 class="font-medium text-sm mb-1 line-clamp-2">
+                    {video.title}
+                  </h3>
+                  <p class="text-xs text-muted-foreground mb-2">
+                    {video.channel_title}
+                  </p>
+                  <div class="flex items-center gap-4 text-xs text-muted-foreground mb-2">
+                    <span>Search: {video.search_term}</span>
+                    <span>Phrases: {video.phrase_count || 0}</span>
+                    <span>Published: {new Date(video.published_at).toLocaleDateString()}</span>
+                  </div>
+                  <div class={`flex items-center gap-1 text-xs ${getStatusColor(video.processing_status)}`}>
+                    <StatusIcon class="h-3 w-3" />
+                    {video.processing_status}
+                  </div>
+                </div>
+                <div class="flex flex-col gap-2">
+                  <a 
+                    href={`https://youtube.com/watch?v=${video.youtube_video_id}`}
+                    target="_blank"
+                    class="text-xs bg-red-600 text-white px-3 py-1 rounded hover:bg-red-700 transition-colors"
+                  >
+                    Watch
+                  </a>
+                  {video.processing_status === 'Pending Subtitle Processing' && (
+                    <button 
+                      class="process-video-btn text-xs bg-blue-600 text-white px-3 py-1 rounded hover:bg-blue-700 transition-colors"
+                      data-video-id={video.id}
+                      title="Process subtitles for this video"
+                    >
+                      Process
+                    </button>
+                  )}
+                  {video.processing_status.startsWith('Error') && (
+                    <button 
+                      class="retry-video-btn text-xs bg-green-600 text-white px-3 py-1 rounded hover:bg-green-700 transition-colors"
+                      data-video-id={video.id}
+                      title="Retry processing this video"
+                    >
+                      🔄 Retry
+                    </button>
+                  )}
+                  {video.processing_status === 'Processing Subtitles' && (
+                    <span class="text-xs bg-yellow-100 text-yellow-800 px-3 py-1 rounded">
+                      ⏳ Processing...
+                    </span>
+                  )}
+                  <button 
+                    class="details-video-btn text-xs border px-3 py-1 rounded hover:bg-muted transition-colors"
+                    data-video-id={video.id}
+                    data-video-title={video.title}
+                    data-video-status={video.processing_status}
+                    data-video-error={video.error_message || ''}
+                    data-video-phrases={video.phrase_count || 0}
+                    data-video-published={video.published_at}
+                    data-video-channel={video.channel_title}
+                  >
+                    Details
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        })
+      )}
+    </div>
+  </div>
+</Layout>
+
+<!-- Video Details Modal -->
+<div id="video-modal" class="fixed inset-0 bg-black bg-opacity-50 hidden z-50 flex items-center justify-center">
+  <div class="bg-white rounded-lg max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto">
+    <div class="p-6">
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="text-lg font-semibold">Video Details</h3>
+        <button id="close-modal" class="text-gray-500 hover:text-gray-700">
+          <X class="h-5 w-5" />
+        </button>
+      </div>
+      <div id="modal-content" class="space-y-3">
+        <!-- Content will be populated by JavaScript -->
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  document.addEventListener('DOMContentLoaded', function() {
+    // Add event listeners to all process video buttons
+    document.querySelectorAll('.process-video-btn').forEach(button => {
+      button.addEventListener('click', async function() {
+        try {
+          const videoId = this.getAttribute('data-video-id');
+          this.disabled = true;
+          this.textContent = 'Processing...';
+          
+          const response = await fetch('/api/admin/process-subtitles', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ videoId: parseInt(videoId) })
+          });
+          
+          const result = await response.json();
+          
+          if (result.success) {
+            alert(`Started processing video`);
+            window.location.reload();
+          } else {
+            alert('Error: ' + (result.error || 'Failed to start processing'));
+            this.disabled = false;
+            this.textContent = 'Process';
+          }
+        } catch (error) {
+          console.error('Video processing error:', error);
+          alert('Error: Failed to start processing');
+          this.disabled = false;
+          this.textContent = 'Process';
+        }
+      });
+    });
+
+    // Add event listeners to retry buttons
+    document.querySelectorAll('.retry-video-btn').forEach(button => {
+      button.addEventListener('click', async function() {
+        try {
+          const videoId = this.getAttribute('data-video-id');
+          this.disabled = true;
+          this.textContent = 'Retrying...';
+          
+          const response = await fetch('/api/admin/retry-processing', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ videoId: parseInt(videoId) })
+          });
+          
+          const result = await response.json();
+          
+          if (result.success) {
+            alert(`Started retry processing for video`);
+            window.location.reload();
+          } else {
+            alert('Error: ' + (result.error || 'Failed to retry processing'));
+            this.disabled = false;
+            this.textContent = 'Retry';
+          }
+        } catch (error) {
+          console.error('Video retry error:', error);
+          alert('Error: Failed to retry processing');
+          this.disabled = false;
+          this.textContent = 'Retry';
+        }
+      });
+    });
+
+    // Add event listeners to details buttons
+    document.querySelectorAll('.details-video-btn').forEach(button => {
+      button.addEventListener('click', function() {
+        const title = this.getAttribute('data-video-title');
+        const status = this.getAttribute('data-video-status');
+        const error = this.getAttribute('data-video-error');
+        const phrases = this.getAttribute('data-video-phrases');
+        const published = this.getAttribute('data-video-published');
+        const channel = this.getAttribute('data-video-channel');
+        const videoId = this.getAttribute('data-video-id');
+        
+        const modalContent = document.getElementById('modal-content');
+        modalContent.innerHTML = `
+          <div class="space-y-4">
+            <div>
+              <label class="block text-sm font-medium text-gray-700">Title</label>
+              <p class="mt-1 text-sm text-gray-900">${title}</p>
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-gray-700">Channel</label>
+              <p class="mt-1 text-sm text-gray-900">${channel}</p>
+            </div>
+            <div class="grid grid-cols-2 gap-4">
+              <div>
+                <label class="block text-sm font-medium text-gray-700">Video ID</label>
+                <p class="mt-1 text-sm text-gray-900 font-mono">${videoId}</p>
+              </div>
+              <div>
+                <label class="block text-sm font-medium text-gray-700">Published</label>
+                <p class="mt-1 text-sm text-gray-900">${new Date(published).toLocaleDateString()}</p>
+              </div>
+            </div>
+            <div class="grid grid-cols-2 gap-4">
+              <div>
+                <label class="block text-sm font-medium text-gray-700">Status</label>
+                <p class="mt-1 text-sm ${status.startsWith('Error') ? 'text-red-600' : 'text-green-600'}">${status}</p>
+              </div>
+              <div>
+                <label class="block text-sm font-medium text-gray-700">Indexed Phrases</label>
+                <p class="mt-1 text-sm text-gray-900">${phrases}</p>
+              </div>
+            </div>
+            ${error ? `
+              <div>
+                <label class="block text-sm font-medium text-gray-700">Error Details</label>
+                <p class="mt-1 text-sm text-red-600 bg-red-50 p-3 rounded">${error}</p>
+              </div>
+            ` : ''}
+          </div>
+        `;
+        
+        document.getElementById('video-modal').classList.remove('hidden');
+      });
+    });
+
+    // Close modal functionality
+    document.getElementById('close-modal').addEventListener('click', function() {
+      document.getElementById('video-modal').classList.add('hidden');
+    });
+
+    // Close modal when clicking outside
+    document.getElementById('video-modal').addEventListener('click', function(e) {
+      if (e.target === this) {
+        this.classList.add('hidden');
+      }
+    });
+
+    // Add event listener for bulk retry button
+    document.getElementById('retry-all-btn')?.addEventListener('click', async function() {
+      try {
+        if (!confirm('Are you sure you want to retry processing all failed videos? This may take some time.')) {
+          return;
+        }
+
+        this.disabled = true;
+        this.textContent = 'Retrying All...';
+        
+        const response = await fetch('/api/admin/retry-processing', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ retryAll: true })
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+          alert(`Started retry processing for ${result.retried} failed videos`);
+          window.location.reload();
+        } else {
+          alert('Error: ' + (result.error || 'Failed to retry processing'));
+          this.disabled = false;
+          this.textContent = 'Retry All Failed';
+        }
+      } catch (error) {
+        console.error('Bulk retry error:', error);
+        alert('Error: Failed to retry processing');
+        this.disabled = false;
+        this.textContent = 'Retry All Failed';
+      }
+    });
+
+    // Add event listener for bulk process button
+    document.getElementById('process-all-btn')?.addEventListener('click', async function() {
+      try {
+        if (!confirm('Are you sure you want to process all pending videos? This may take some time.')) {
+          return;
+        }
+
+        this.disabled = true;
+        this.textContent = 'Processing All...';
+        
+        const response = await fetch('/api/admin/process-subtitles', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ processAll: true })
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+          alert(`Started processing for ${result.processed} pending videos`);
+          window.location.reload();
+        } else {
+          alert('Error: ' + (result.error || 'Failed to start processing'));
+          this.disabled = false;
+          this.textContent = 'Process All Pending';
+        }
+      } catch (error) {
+        console.error('Bulk process error:', error);
+        alert('Error: Failed to start processing');
+        this.disabled = false;
+        this.textContent = 'Process All Pending';
+      }
+    });
+  });
+</script>

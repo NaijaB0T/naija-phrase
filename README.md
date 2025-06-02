@@ -1,108 +1,145 @@
-# SaaS Admin Template
+# YouTube Phrase Search Webapp
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/cloudflare/templates/tree/main/saas-admin-template)
+A powerful webapp that allows you to search for specific phrases within YouTube videos and jump directly to the exact timestamp where they're spoken.
 
-![SaaS Admin Template](https://imagedelivery.net/wSMYJvS3Xw-n339CbDyDIA/52b88668-0144-489c-dd02-fe620270ba00/public)
+## Overview
 
-<!-- dash-content-start -->
+This application has been converted from a SaaS admin template into a comprehensive YouTube phrase search system:
 
-A complete admin dashboard template built with Astro, Shadcn UI, and Cloudflare's developer stack. Quickly deploy a fully functional admin interface with customer and subscription management capabilities.
+- **Admin Panel**: Manage search terms and monitor video discovery
+- **Automated Discovery**: Finds relevant YouTube videos for admin-defined search terms
+- **Subtitle Processing**: Downloads and indexes video subtitles with timestamps
+- **Real-time Search**: End-users can search for phrases and get instant results
+- **Direct YouTube Links**: Click results to jump to exact moments in videos
 
-## Features
+## Key Features
 
-- 🎨 Modern UI built with Astro and Shadcn UI
-- 🔐 Built-in API with token authentication
-- 👥 Customer management
-- 💳 Subscription tracking
-- 🚀 Deploy to Cloudflare Workers
-- 📦 Powered by Cloudflare D1 database
-- ✨ Clean, responsive interface
-- 🔍 Data validation with Zod
+### For Administrators
+- ✅ Add/remove search terms (e.g., "AstroJS tutorials", "sustainable gardening")
+- ✅ Monitor video discovery progress and processing status  
+- ✅ View discovered videos and indexed phrases
+- ✅ Trigger manual video discovery runs
 
-## Tech Stack
+### For End Users
+- ✅ Real-time phrase search with debounced input
+- ✅ Results show video thumbnails, titles, and matching phrases
+- ✅ Click to open YouTube videos at exact timestamps
+- ✅ Fast full-text search using SQLite FTS5
 
-- Frontend: [Astro](https://astro.build)
-- UI Components: [Shadcn UI](https://ui.shadcn.com)
-- Database: [Cloudflare D1](https://developers.cloudflare.com/d1)
-- Deployment: [Cloudflare Workers](https://workers.cloudflare.com)
-- Validation: [Zod](https://github.com/colinhacks/zod)
+## Architecture
 
-> [!IMPORTANT]
-> When using C3 to create this project, select "no" when it asks if you want to deploy. You need to follow this project's [setup steps](https://github.com/cloudflare/templates/tree/main/d1-template#setup-steps) before deploying.
+### Frontend
+- **Astro** - Static site generation with dynamic components
+- **React** - Interactive search and admin components
+- **Tailwind CSS** - Modern styling system
 
-<!-- dash-content-end -->
+### Backend
+- **Astro API Routes** - RESTful endpoints for search and admin functions
+- **Cloudflare D1** - SQLite database for storing videos and phrases
+- **Cloudflare Workers** - Background processing workflows
 
-## Setup Steps
+### Workflows
+1. **VideoDiscoveryWorkflow** - Discovers YouTube videos using search terms
+2. **SubtitleProcessingWorkflow** - Downloads and indexes video subtitles
 
-1. Install dependencies:
+## Database Schema
+
+### Core Tables
+- `admins` - Admin user accounts
+- `search_terms` - Search terms for video discovery  
+- `videos` - Discovered YouTube videos with metadata
+- `video_phrases` - Indexed phrases with timestamps
+- `video_phrases_fts` - Full-text search index for phrases
+
+## Setup Instructions
+
+### 1. Environment Configuration
+
+Update `wrangler.jsonc` with your configuration:
+
+```json
+{
+  "vars": {
+    "YOUTUBE_API_KEY": "your_actual_youtube_api_key",
+    "ADMIN_PASSWORD_HASH": "your_bcrypt_hashed_password"
+  }
+}
+```
+
+### 2. YouTube API Setup
+
+1. Go to [Google Cloud Console](https://console.cloud.google.com/)
+2. Create a new project or select existing one
+3. Enable the YouTube Data API v3
+4. Create an API key and add it to your environment variables
+
+### 3. Database Migration
 
 ```bash
+# Local development
+npm run db:migrate
+
+# Production deployment  
+npm run db:migrate:remote
+```
+
+### 4. Development
+
+```bash
+# Install dependencies
 npm install
-```
 
-2. Set up your environment variables:
-
-```bash
-# Create a .dev.vars file for local development
-touch .dev.vars
-```
-
-Add your API token:
-
-```
-API_TOKEN=your_token_here
-```
-
-_An API token is required to authenticate requests to the API. You should generate this before trying to run the project locally or deploying it._
-
-3. Create a [D1 database](https://developers.cloudflare.com/d1/get-started/) with the name "admin-db":
-
-```bash
-npx wrangler d1 create admin-db
-```
-
-...and update the `database_id` field in `wrangler.json` with the new database ID.
-
-4. Run the database migrations locally:
-
-```bash
-$ npm run db:migrate
-```
-
-Run the development server:
-
-```bash
+# Run development server
 npm run dev
-```
 
-_If you're testing Workflows, you should run `npm run wrangler:dev` instead._
-
-5. Build the application:
-
-```bash
+# Build for production
 npm run build
-```
 
-6. Deploy to Cloudflare Workers:
-
-```bash
+# Deploy to Cloudflare
 npm run deploy
-```
-
-7. Run the database migrations remotely:
-
-```bash
-$ npm run db:migrate:remote
-```
-
-8. Set your production API token:
-
-```bash
-npx wrangler secret put API_TOKEN
 ```
 
 ## Usage
 
-This project includes a fully functional admin dashboard with customer and subscription management capabilities. It also includes an API with token authentication to access resources via REST, returning JSON data.
+### Admin Access
+1. Navigate to `/admin` 
+2. Login with admin credentials (default: admin@example.com / admin123)
+3. Add search terms like "AstroJS tutorials" or "React hooks explained"
+4. Click "Run" to trigger video discovery for each term
+5. Monitor processing status and view discovered videos
 
-It also includes a "Customer Workflow", built with [Cloudflare Workflows](https://developers.cloudflare.com/workflows). This workflow can be triggered in the UI or via the REST API to do arbitrary actions in the background for any given user. See [`customer_workflow.ts`]() to learn more about what you can do in this workflow.
+### End User Search
+1. Visit the homepage
+2. Type phrases like "how to deploy" or "useState hook"
+3. Click results to jump to exact timestamps in YouTube videos
+4. Results update in real-time as you type
+
+## Project Structure
+
+```
+src/
+├── components/
+│   ├── admin/                    # Admin interface components
+│   ├── ui/                       # Reusable UI components  
+│   └── phrase-search.tsx         # Main search interface
+├── pages/
+│   ├── api/                      # API endpoints
+│   ├── admin/                    # Admin pages
+│   └── index.astro               # Homepage with search
+├── workflows/                    # Background processing
+│   ├── video_discovery_workflow.ts
+│   └── subtitle_processing_workflow.ts
+└── layouts/                      # Page layouts
+```
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Test thoroughly
+5. Submit a pull request
+
+## License
+
+MIT License - see LICENSE file for details.

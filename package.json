@@ -1,6 +1,6 @@
 {
   "name": "naija-phrase",
-  "description": "Admin dashboard template built with Astro, shadcn/ui, and Cloudflare's developer stack",
+  "description": "YouTube Phrase Search - Find specific phrases in YouTube videos with timestamp links",
   "cloudflare": {
     "label": "SaaS Admin Template",
     "products": [
@@ -39,6 +39,8 @@
     "tailwind-merge": "2.6.0",
     "tailwindcss": "3.4.17",
     "tailwindcss-animate": "1.0.7",
+    "youtube-transcript": "1.2.1",
+    "node-fetch": "3.3.2",
     "zod": "3.24.3"
   },
   "devDependencies": {
@@ -55,6 +57,6 @@
     "dev": "npm run build && npm run wrangler:wrapper && npx wrangler dev",
     "predeploy": "npm run db:migrate:remote",
     "preview": "npm run build && npm run wrangler:wrapper && wrangler dev",
-    "wrangler:wrapper": "cp src/workflows/wrapper.js dist/index.js"
+    "wrangler:wrapper": "echo F | xcopy src\\workflows\\wrapper.js dist\\index.js /Y"
   }
 }

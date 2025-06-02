@@ -2,15 +2,15 @@ import { cn } from "@/lib/utils";
 
 const links = [
   { href: "/admin", label: "Admin" },
-  { href: "/admin/customers", label: "Customers" },
-  { href: "/admin/subscriptions", label: "Subscriptions" },
+  { href: "/admin/videos", label: "Videos" },
+  { href: "/admin/phrases", label: "Phrases" },
 ];
 
 export function Header({ currentPath }: { currentPath: string }) {
   return (
     <nav className="flex items-center space-x-4 lg:space-x-6 mx-6 h-16">
       <a href="/" className="text-sm font-bold leading-none text-foreground">
-        SaaS Admin Template
+        YouTube Phrase Search
       </a>
       {links.map((link) => (
         <a

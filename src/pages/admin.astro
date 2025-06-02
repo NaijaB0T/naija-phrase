@@ -1,83 +1,261 @@
 ---
-import { BadgeDollarSign, CalendarSync, User } from 'lucide-react';
+import { Youtube, Search, Database, Play } from 'lucide-react';
 import Layout from '@/layouts/Layout.astro';
-import { APIDocumentation } from '@/components/admin/api-documentation';
-import { Label } from '@/components/ui/label';
-import { Input } from '@/components/ui/input';
-
-import { CustomerService } from '@/lib/services/customer';
-import { SubscriptionService } from '@/lib/services/subscription';
-import { CustomerSubscriptionService } from '@/lib/services/customer_subscription';
+import { SearchTermsManager } from '@/components/admin/search-terms-manager';
 
 const { DB } = Astro.locals.runtime.env;
 
-const customerService = new CustomerService(DB);
-const subscriptionService = new SubscriptionService(DB);
-const customerSubscriptionService = new CustomerSubscriptionService(DB);
+// Get dashboard statistics
+const searchTermsCount = await DB.prepare('SELECT COUNT(*) as count FROM search_terms').first();
+const videosCount = await DB.prepare('SELECT COUNT(*) as count FROM videos').first();
+const processedVideosCount = await DB.prepare('SELECT COUNT(*) as count FROM videos WHERE processing_status = ?').bind('Subtitles Processed').first();
+const pendingVideosCount = await DB.prepare('SELECT COUNT(*) as count FROM videos WHERE processing_status = ?').bind('Pending Subtitle Processing').first();
+const processingVideosCount = await DB.prepare('SELECT COUNT(*) as count FROM videos WHERE processing_status = ?').bind('Processing Subtitles').first();
+const phrasesCount = await DB.prepare('SELECT COUNT(*) as count FROM video_phrases').first();
 
-const customers = await customerService.getAll();
-const subscriptions = await subscriptionService.getAll();
-const customerSubscriptions = await customerSubscriptionService.getAll();
-
-const data = [
+const stats = [
   {
-    name: 'Customers',
-    value: customers.length,
-    icon: User,
-    href: '/admin/customers'
+    name: 'Search Terms',
+    value: searchTermsCount.count || 0,
+    icon: Search,
+    description: 'Active search terms being monitored'
   },
   {
-    name: 'Subscriptions',
-    value: subscriptions.length,
-    icon: BadgeDollarSign,
-    href: '/admin/subscriptions'
+    name: 'Videos Found',
+    value: videosCount.count || 0,
+    icon: Youtube,
+    description: 'Total YouTube videos discovered'
   },
   {
-    name: 'Customer Subscriptions',
-    value: customerSubscriptions.length,
-    icon: CalendarSync
+    name: 'Videos Processed',
+    value: processedVideosCount.count || 0,
+    icon: Play,
+    description: 'Videos with subtitles indexed',
+    color: 'text-green-600'
+  },
+  {
+    name: 'Pending Processing',
+    value: pendingVideosCount.count || 0,
+    icon: Database,
+    description: 'Videos waiting for subtitle processing',
+    color: 'text-yellow-600'
+  },
+  {
+    name: 'Currently Processing',
+    value: processingVideosCount.count || 0,
+    icon: Play,
+    description: 'Videos being processed right now',
+    color: 'text-blue-600'
+  },
+  {
+    name: 'Searchable Phrases',
+    value: phrasesCount.count || 0,
+    icon: Database,
+    description: 'Total phrases available for search'
   }
-]
+];
 ---
 
-<Layout title="Admin">
+<Layout title="YouTube Phrase Search - Admin Dashboard">
   <div class="space-y-8">
-    <div class="grid gap-4 md:grid-cols-2 lg:grid-cols-3 mt-4">
-      {data.map((item) => (
-        item.href ? (
-          <div class="rounded-xl border bg-card text-card-foreground hover:bg-muted shadow transition-colors">
-            <a href={item.href}>
-              <div class="p-6">
-                <div class="flex flex-row items-center justify-between space-y-0 pb-2">
-                  <div class="tracking-tight text-sm font-medium">{item.name}</div>
-                  <item.icon />
-                </div>
-                <div class="pt-0">
-                  <div class="text-2xl font-bold">{item.value}</div>
-                </div>
-              </div>
-            </a>
-          </div>
-        ) : (
-          <div class="rounded-xl border bg-card text-card-foreground shadow">
-            <div class="p-6">
-              <div class="flex flex-row items-center justify-between space-y-0 pb-2">
-                <div class="tracking-tight text-sm font-medium">{item.name}</div>
-                <item.icon />
-              </div>
-              <div class="pt-0">
-                <div class="text-2xl font-bold">{item.value}</div>
-              </div>
+    <div>
+      <h1 class="text-3xl font-bold tracking-tight">Admin Dashboard</h1>
+      <p class="text-muted-foreground mt-2">
+        Manage search terms and monitor the YouTube video discovery process.
+      </p>
+    </div>
+
+    <!-- Statistics Cards -->
+    <div class="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+      {stats.map((stat) => (
+        <div class="rounded-xl border bg-card text-card-foreground shadow">
+          <div class="p-6">
+            <div class="flex flex-row items-center justify-between space-y-0 pb-2">
+              <div class="tracking-tight text-sm font-medium">{stat.name}</div>
+              <stat.icon class={`h-4 w-4 ${stat.color || 'text-muted-foreground'}`} />
+            </div>
+            <div class="pt-0">
+              <div class="text-2xl font-bold">{stat.value.toLocaleString()}</div>
+              <p class="text-xs text-muted-foreground mt-1">
+                {stat.description}
+              </p>
             </div>
           </div>
-        )
+        </div>
       ))}
     </div>
 
+    <!-- Processing Controls -->
     <section class="space-y-4">
-      <h2 class="text-3xl font-bold tracking-tight">API</h2>
-      <div>
-        <APIDocumentation client:only="react" />
+      <h2 class="text-2xl font-bold tracking-tight">Processing Controls</h2>
+      <div class="grid gap-4 md:grid-cols-3">
+        <div class="border rounded-lg p-4 space-y-3">
+          <h3 class="font-semibold">Subtitle Processing</h3>
+          <p class="text-sm text-muted-foreground">
+            Process pending videos to extract searchable phrases
+          </p>
+          <div class="flex gap-2">
+            <button 
+              id="processAllBtn"
+              class="text-sm bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 transition-colors"
+            >
+              Process All Pending
+            </button>
+            <button 
+              id="refreshBtn"
+              class="text-sm border px-4 py-2 rounded hover:bg-muted transition-colors"
+            >
+              Refresh Status
+            </button>
+          </div>
+        </div>
+        <div class="border rounded-lg p-4 space-y-3">
+          <h3 class="font-semibold">Add Individual Video</h3>
+          <p class="text-sm text-muted-foreground">
+            Add a specific YouTube video URL for processing
+          </p>
+          <div class="space-y-2">
+            <input 
+              type="url" 
+              id="videoUrlInput"
+              placeholder="https://youtube.com/watch?v=..."
+              class="w-full text-sm border rounded px-3 py-2"
+            />
+            <button 
+              id="addVideoBtn"
+              class="text-sm bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 transition-colors"
+            >
+              Add Video
+            </button>
+          </div>
+        </div>
+        <div class="border rounded-lg p-4 space-y-3">
+          <h3 class="font-semibold">Processing Queue</h3>
+          <div class="text-sm space-y-1">
+            <div class="flex justify-between">
+              <span>Pending:</span>
+              <span class="font-medium text-yellow-600">{pendingVideosCount.count || 0}</span>
+            </div>
+            <div class="flex justify-between">
+              <span>Processing:</span>
+              <span class="font-medium text-blue-600">{processingVideosCount.count || 0}</span>
+            </div>
+            <div class="flex justify-between">
+              <span>Completed:</span>
+              <span class="font-medium text-green-600">{processedVideosCount.count || 0}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <script>
+      document.addEventListener('DOMContentLoaded', function() {
+        // Process All Subtitles button
+        document.getElementById('processAllBtn').addEventListener('click', async function() {
+          try {
+            const button = this;
+            button.disabled = true;
+            button.textContent = 'Processing...';
+            
+            const response = await fetch('/api/admin/process-subtitles', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ processAll: true })
+            });
+            
+            const result = await response.json();
+            
+            if (result.success) {
+              alert(`Started processing ${result.processed} videos`);
+              window.location.reload();
+            } else {
+              alert('Error: ' + (result.error || 'Failed to start processing'));
+              button.disabled = false;
+              button.textContent = 'Process All Pending';
+            }
+          } catch (error) {
+            console.error('Processing error:', error);
+            alert('Error: Failed to start processing');
+            this.disabled = false;
+            this.textContent = 'Process All Pending';
+          }
+        });
+        
+        // Refresh Stats button
+        document.getElementById('refreshBtn').addEventListener('click', function() {
+          window.location.reload();
+        });
+        
+        // Add Video button
+        document.getElementById('addVideoBtn').addEventListener('click', async function() {
+          try {
+            const input = document.getElementById('videoUrlInput');
+            const videoUrl = input.value.trim();
+            
+            if (!videoUrl) {
+              alert('Please enter a YouTube video URL');
+              return;
+            }
+            
+            const button = this;
+            button.disabled = true;
+            button.textContent = 'Adding...';
+            
+            const response = await fetch('/api/admin/add-video', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ videoUrl })
+            });
+            
+            const result = await response.json();
+            
+            if (result.success) {
+              alert(`Video added successfully! Processing will begin shortly.`);
+              input.value = '';
+              window.location.reload();
+            } else {
+              alert('Error: ' + (result.error || 'Failed to add video'));
+              button.disabled = false;
+              button.textContent = 'Add Video';
+            }
+          } catch (error) {
+            console.error('Add video error:', error);
+            alert('Error: Failed to add video');
+            this.disabled = false;
+            this.textContent = 'Add Video';
+          }
+        });
+      });
+    </script>
+
+
+    <!-- Search Terms Management -->
+    <section class="space-y-4">
+      <div class="border rounded-lg p-6">
+        <SearchTermsManager client:load />
+      </div>
+    </section>
+
+    <!-- Quick Actions -->
+    <section class="space-y-4">
+      <h2 class="text-2xl font-bold tracking-tight">Quick Actions</h2>
+      <div class="grid gap-4 md:grid-cols-3">
+        <a href="/admin/videos" class="border rounded-lg p-4 hover:bg-muted transition-colors">
+          <Youtube class="h-8 w-8 text-red-600 mb-2" />
+          <h3 class="font-semibold">Manage Videos</h3>
+          <p class="text-sm text-muted-foreground">View and manage discovered videos</p>
+        </a>
+        <a href="/admin/phrases" class="border rounded-lg p-4 hover:bg-muted transition-colors">
+          <Database class="h-8 w-8 text-blue-600 mb-2" />
+          <h3 class="font-semibold">Browse Phrases</h3>
+          <p class="text-sm text-muted-foreground">Explore indexed phrases and timestamps</p>
+        </a>
+        <div class="border rounded-lg p-4 bg-muted/30">
+          <Play class="h-8 w-8 text-green-600 mb-2" />
+          <h3 class="font-semibold">System Status</h3>
+          <p class="text-sm text-muted-foreground">All systems operational</p>
+        </div>
       </div>
     </section>
   </div>

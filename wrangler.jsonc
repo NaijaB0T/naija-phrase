@@ -11,7 +11,7 @@
   },
   "upload_source_maps": true,
   "vars": {
-    "EXAMPLE_VALUE": "example_value"
+    "YOUTUBE_API_KEY": "AIzaSyAbCsR3chs8dLhEhBrXDCqMtP1n9n83_aA"
   },
   "d1_databases": [
     {
@@ -20,11 +20,23 @@
       "database_id": "5c64c472-07b0-450f-a549-72633c9ae6cb"
     }
   ],
+  "kv_namespaces": [
+    {
+      "binding": "SESSION",
+      "id": "00000000000000000000000000000000",
+      "preview_id": "00000000000000000000000000000000"
+    }
+  ],
   "workflows": [
     {
-      "name": "saas-admin-template-customer-workflow",
-      "binding": "CUSTOMER_WORKFLOW",
-      "class_name": "CustomerWorkflow"
+      "name": "naija-phrase-video-discovery-workflow",
+      "binding": "VIDEO_DISCOVERY_WORKFLOW",
+      "class_name": "VideoDiscoveryWorkflow"
+    },
+    {
+      "name": "naija-phrase-subtitle-processing-workflow", 
+      "binding": "SUBTITLE_PROCESSING_WORKFLOW",
+      "class_name": "SubtitleProcessingWorkflow"
     }
   ]
 }

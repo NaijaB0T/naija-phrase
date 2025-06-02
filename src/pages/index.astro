@@ -1,9 +1,7 @@
 ---
-import { buttonVariants } from '@/components/ui/button';
-import { Github, LayoutDashboard } from 'lucide-react';
 import '@/styles/globals.css'
-
-const repoLink = 'https://github.com/cloudflare/templates/tree/main/saas-admin-template';
+import '@/styles/hero.css'
+import { HeroSearch } from '@/components/hero-search'
 ---
 
 <script is:inline>
@@ -26,25 +24,123 @@ const repoLink = 'https://github.com/cloudflare/templates/tree/main/saas-admin-t
 </script>
 
 <!doctype html>
-<html lang="en">
+<html lang="en" class="h-full">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="generator" content={Astro.generator} />
-    <title>SaaS Admin Template</title>
+    <title>Naija Phrase - Find YouTube Moments</title>
+    <meta name="description" content="Search for specific phrases in YouTube videos and jump directly to the timestamp where they're spoken. Discover amazing moments with cinematic search experience.">
+    
+    <!-- Preload critical fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    
+    <!-- Open Graph / Facebook -->
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="Naija Phrase - Find YouTube Moments" />
+    <meta property="og:description" content="Search for specific phrases in YouTube videos and jump directly to the timestamp where they're spoken." />
+    
+    <!-- Twitter -->
+    <meta property="twitter:card" content="summary_large_image" />
+    <meta property="twitter:title" content="Naija Phrase - Find YouTube Moments" />
+    <meta property="twitter:description" content="Search for specific phrases in YouTube videos and jump directly to the timestamp where they're spoken." />
+    
+    <style>
+      /* Custom scrollbar for sidebar */
+      .scrollbar-thin {
+        scrollbar-width: thin;
+      }
+      
+      .scrollbar-track-white\/10 {
+        scrollbar-color: rgba(255, 255, 255, 0.3) rgba(255, 255, 255, 0.1);
+      }
+      
+      /* Webkit scrollbar for Chromium browsers */
+      .scrollbar-thin::-webkit-scrollbar {
+        width: 6px;
+      }
+      
+      .scrollbar-thin::-webkit-scrollbar-track {
+        background: rgba(255, 255, 255, 0.1);
+        border-radius: 3px;
+      }
+      
+      .scrollbar-thin::-webkit-scrollbar-thumb {
+        background: rgba(255, 255, 255, 0.3);
+        border-radius: 3px;
+      }
+      
+      .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+        background: rgba(255, 255, 255, 0.5);
+      }
+
+      /* Smooth animations */
+      * {
+        scroll-behavior: smooth;
+      }
+
+      /* Line clamp utilities */
+      .line-clamp-2 {
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+      }
+
+      /* Ensure full height */
+      html, body {
+        height: 100%;
+        margin: 0;
+        padding: 0;
+      }
+
+      /* Background blur effect */
+      .backdrop-blur-sm {
+        backdrop-filter: blur(4px);
+      }
+      
+      .backdrop-blur-md {
+        backdrop-filter: blur(12px);
+      }
+
+      /* Text shadows for better readability */
+      .drop-shadow-lg {
+        filter: drop-shadow(0 10px 8px rgba(0, 0, 0, 0.04)) drop-shadow(0 4px 3px rgba(0, 0, 0, 0.1));
+      }
+      
+      .drop-shadow-2xl {
+        filter: drop-shadow(0 25px 25px rgba(0, 0, 0, 0.15));
+      }
+    </style>
   </head>
-  <body>
-    <div class="flex flex-col items-center justify-center gap-4 py-20 px-8">
-      <h1 class="text-5xl font-bold">SaaS Admin Template</h1>
-      <p class="text-xl text-muted-foreground">Manage a SaaS application - customers, subscriptions - using Cloudflare Workers and D1.</p>
-      <div class="flex flex gap-4 mt-4">
-        <a class={buttonVariants()} href="/admin">
-          <LayoutDashboard /> Go to admin
-        </a>
-        <a class={buttonVariants({ variant: 'outline' })} href={repoLink}>
-          <Github /> View on GitHub
-        </a>
-    </div>
+  <body class="h-full bg-black text-white overflow-hidden">
+    <!-- Admin Link (Hidden unless hovered) -->
+    <a 
+      href="/admin" 
+      class="fixed top-4 left-4 z-50 opacity-0 hover:opacity-100 transition-opacity duration-300 bg-black/50 backdrop-blur-sm text-white/70 hover:text-white px-3 py-1 rounded text-sm"
+    >
+      Admin
+    </a>
+
+    <!-- Main Hero Search Component -->
+    <HeroSearch client:load />
+    
+    <script>
+      // Global keyboard shortcuts that don't interfere with the component
+      document.addEventListener('keydown', function(e) {
+        // Allow admin access with Ctrl+Shift+A
+        if (e.ctrlKey && e.shiftKey && e.key === 'A') {
+          window.location.href = '/admin';
+        }
+      });
+
+      // Preload YouTube API for better performance
+      const script = document.createElement('script');
+      script.src = 'https://www.youtube.com/iframe_api';
+      script.async = true;
+      document.head.appendChild(script);
+    </script>
   </body>
 </html>

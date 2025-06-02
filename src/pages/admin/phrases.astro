@@ -1,0 +1,87 @@
+---
+import { Database, Search, Clock, Youtube } from 'lucide-react';
+import Layout from '@/layouts/Layout.astro';
+
+const { DB } = Astro.locals.runtime.env;
+
+// Get recent phrases with video info
+const phrasesQuery = `
+  SELECT vp.*, v.title as video_title, v.youtube_video_id, v.thumbnail_url, v.channel_title
+  FROM video_phrases vp JOIN videos v ON v.id = vp.video_id
+  ORDER BY vp.created_at DESC LIMIT 100
+`;
+
+const phrases = await DB.prepare(phrasesQuery).all();
+
+const formatTime = (seconds: number): string => {
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.floor(seconds % 60);
+  return `${mins}:${secs.toString().padStart(2, '0')}`;
+};
+---
+
+<Layout title="Phrases - Admin">
+  <div class="space-y-6">
+    <div class="flex items-center justify-between">
+      <div>
+        <h1 class="text-3xl font-bold tracking-tight">Indexed Phrases</h1>
+        <p class="text-muted-foreground mt-2">
+          All phrases extracted from video subtitles
+        </p>
+      </div>
+      <div class="text-sm text-muted-foreground">
+        {phrases.results?.length || 0} recent phrases
+      </div>
+    </div>
+
+    <div class="space-y-3">
+      {phrases.results?.length === 0 ? (
+        <div class="text-center py-12">
+          <Database class="h-12 w-12 mx-auto text-muted-foreground mb-4" />
+          <h3 class="text-lg font-semibold mb-2">No phrases indexed yet</h3>
+          <p class="text-muted-foreground">
+            Videos need to be processed to extract searchable phrases.
+          </p>
+        </div>      ) : (
+        phrases.results?.map((phrase) => (
+          <div key={phrase.id} class="border rounded-lg p-4 hover:bg-muted/30 transition-colors">
+            <div class="flex gap-4">
+              <img
+                src={phrase.thumbnail_url}
+                alt={phrase.video_title}
+                class="w-16 h-12 object-cover rounded flex-shrink-0"
+              />
+              <div class="flex-1 min-w-0">
+                <p class="text-sm font-medium mb-1 line-clamp-2">
+                  "{phrase.phrase_text}"
+                </p>
+                <div class="flex items-center gap-4 text-xs text-muted-foreground">
+                  <span class="line-clamp-1">{phrase.video_title}</span>
+                  <span class="flex items-center gap-1">
+                    <Clock class="h-3 w-3" />
+                    {formatTime(phrase.start_time_seconds)}
+                  </span>
+                </div>
+              </div>
+              <div class="flex flex-col gap-1">
+                <a 
+                  href={`https://youtube.com/watch?v=${phrase.youtube_video_id}&t=${Math.floor(phrase.start_time_seconds)}s`}
+                  target="_blank"
+                  class="text-xs bg-red-600 text-white px-3 py-1 rounded hover:bg-red-700 transition-colors text-center"
+                >
+                  Watch
+                </a>
+                <button 
+                  onclick={`navigator.clipboard.writeText('${phrase.phrase_text}')`}
+                  class="text-xs border px-3 py-1 rounded hover:bg-muted transition-colors"
+                >
+                  Copy
+                </button>
+              </div>
+            </div>
+          </div>
+        ))
+      )}
+    </div>
+  </div>
+</Layout>
