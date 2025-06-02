@@ -36,6 +36,31 @@ export const GET: APIRoute = async ({ url, locals }) => {
 
     const phraseCount = phraseCountResult?.count || 0;
 
+    // Get queue status if applicable
+    let queueStatus = null;
+    try {
+      const queueResult = await DB.prepare(`
+        SELECT 
+          COUNT(*) as total_chunks,
+          SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending_chunks,
+          SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed_chunks
+        FROM processing_queue 
+        WHERE video_id = ?
+      `).bind(videoId).first();
+      
+      if (queueResult && queueResult.total_chunks > 0) {
+        queueStatus = {
+          total_chunks: queueResult.total_chunks,
+          pending_chunks: queueResult.pending_chunks,
+          completed_chunks: queueResult.completed_chunks,
+          progress_percentage: queueResult.total_chunks > 0 ? 
+            Math.round((queueResult.completed_chunks / queueResult.total_chunks) * 100) : 0
+        };
+      }
+    } catch (error) {
+      // Queue table might not exist yet, ignore
+    }
+
     // Determine processing stage and progress
     let stage = 'unknown';
     let progress = 0;
@@ -58,6 +83,14 @@ export const GET: APIRoute = async ({ url, locals }) => {
           stage = 'stuck_fetching';
         }
         break;
+      case 'Partial Processing - Queue Pending':
+        stage = 'queue_processing';
+        progress = queueStatus ? queueStatus.progress_percentage : 50;
+        if (timeSinceLastUpdate > 15) {
+          isStuck = true;
+          stage = 'stuck_queue';
+        }
+        break;
       case 'Subtitles Processed':
         stage = 'completed';
         progress = 100;
@@ -70,11 +103,14 @@ export const GET: APIRoute = async ({ url, locals }) => {
         if (video.processing_status?.startsWith('Error')) {
           stage = 'error';
           progress = 0;
+        } else if (video.processing_status?.startsWith('Partial Processing')) {
+          stage = 'partial_retry_needed';
+          progress = 75;
         }
     }
 
     // If we have phrases being indexed, we're likely in the bulk indexing stage
-    if (video.processing_status === 'Processing Subtitles' && phraseCount > 0) {
+    if (video.processing_status === 'Processing Subtitles' && phraseCount > 0 && !queueStatus) {
       stage = 'indexing_phrases';
       progress = 75;
       
@@ -97,7 +133,8 @@ export const GET: APIRoute = async ({ url, locals }) => {
         progress,
         phraseCount,
         isStuck,
-        timeSinceLastUpdate: Math.round(timeSinceLastUpdate)
+        timeSinceLastUpdate: Math.round(timeSinceLastUpdate),
+        queueStatus
       },
       timestamp: new Date().toISOString()
     };

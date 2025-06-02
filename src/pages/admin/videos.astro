@@ -194,6 +194,19 @@ const getStatusColor = (status: string) => {
                       </div>
                     </div>
                   )}
+                  {video.processing_status.startsWith('Partial Processing') && (
+                    <div id={`monitor-${video.id}`} class="monitoring-area">
+                      <div class="text-xs bg-orange-100 text-orange-800 px-3 py-1 rounded mb-1">
+                        🔄 Queue Processing...
+                      </div>
+                      <div class="worker-status text-xs text-gray-600" data-video-id={video.id}>
+                        <div class="progress-bar bg-gray-200 rounded h-1 mb-1">
+                          <div class="progress-fill bg-orange-500 h-1 rounded" style="width: 75%"></div>
+                        </div>
+                        <div class="status-text">Checking queue status...</div>
+                      </div>
+                    </div>
+                  )}
                   <button 
                     class="details-video-btn text-xs border px-3 py-1 rounded hover:bg-muted transition-colors"
                     data-video-id={video.id}
@@ -260,12 +273,23 @@ const getStatusColor = (status: string) => {
         // Update status text
         if (statusText) {
           let message = '';
+          const { queueStatus } = data.monitoring;
+          
           switch (stage) {
             case 'fetching_subtitles': message = '📥 Fetching subtitles...'; break;
             case 'indexing_phrases': message = `📝 Indexing phrases (${phraseCount})...`; break;
+            case 'queue_processing': 
+              if (queueStatus) {
+                message = `🔄 Queue processing (${queueStatus.completed_chunks}/${queueStatus.total_chunks} chunks, ${phraseCount} phrases)...`;
+              } else {
+                message = `🔄 Large video queue processing (${phraseCount} phrases)...`;
+              }
+              break;
             case 'completed': message = `✅ Done! ${phraseCount} phrases`; break;
             case 'stuck_fetching': message = `⚠️ STUCK fetching (${timeSinceLastUpdate}m)`; break;
             case 'stuck_indexing': message = `⚠️ STUCK indexing (${timeSinceLastUpdate}m)`; break;
+            case 'stuck_queue': message = `⚠️ STUCK in queue (${timeSinceLastUpdate}m)`; break;
+            case 'partial_retry_needed': message = `🟡 Partial complete - retry needed`; break;
             default: message = '🔄 Processing...';
           }
           statusText.textContent = message;
@@ -299,15 +323,19 @@ const getStatusColor = (status: string) => {
     processingVideos.forEach(statusEl => {
       const videoId = statusEl.getAttribute('data-video-id');
       if (videoId) {
-        // Initial status check
-        updateWorkerStatus(videoId);
-        
-        // Poll every 3 seconds
-        const intervalId = setInterval(() => {
+        // Check if this is a processing video that needs monitoring
+        const monitoringArea = statusEl.closest('.monitoring-area');
+        if (monitoringArea) {
+          // Initial status check
           updateWorkerStatus(videoId);
-        }, 3000);
-        
-        monitoringIntervals.set(videoId, intervalId);
+          
+          // Poll every 3 seconds
+          const intervalId = setInterval(() => {
+            updateWorkerStatus(videoId);
+          }, 3000);
+          
+          monitoringIntervals.set(videoId, intervalId);
+        }
       }
     });
     

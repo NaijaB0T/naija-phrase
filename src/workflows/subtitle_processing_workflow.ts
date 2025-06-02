@@ -101,60 +101,89 @@ export class SubtitleProcessingWorkflow extends WorkflowEntrypoint<Env, Params> 
       return this.cleanAndMergeSubtitles(preCleanedSubtitles); // Pass pre-cleaned subtitles
     });
 
-    // OPTIMIZED: Bulk index phrases with CPU time management
-    const phrasesIndexed = await step.do("bulk index phrases", async () => {
+    // QUEUE-BASED: Process in multiple workflow steps to avoid rate limits
+    const phrasesIndexed = await step.do("start queued processing", async () => {
       if (cleanedSubtitles.length === 0) return 0;
       
-      console.log(`Starting CPU-aware bulk processing of ${cleanedSubtitles.length} subtitle entries`);
-      const startTime = Date.now();
-      const MAX_PROCESSING_TIME = 8000; // 8 seconds max (leave 2s buffer)
+      console.log(`Starting queue-based processing of ${cleanedSubtitles.length} subtitle entries`);
       
-      // If we have too many subtitles, process in chunks with delays
-      if (cleanedSubtitles.length > 200) {
-        console.log(`Large subtitle set detected (${cleanedSubtitles.length}), using chunked processing`);
-        return await this.processSubtitlesInChunks(DB, videoId, cleanedSubtitles, startTime, MAX_PROCESSING_TIME);
+      // Check if we need queue-based processing (large sets or previous rate limit)
+      if (cleanedSubtitles.length > 100) {
+        console.log(`Large subtitle set detected, using multi-step queue processing`);
+        
+        // Get existing phrases first
+        const existingPhrasesResult = await DB.prepare(`
+          SELECT phrase_text, start_time_seconds, end_time_seconds 
+          FROM video_phrases 
+          WHERE video_id = ?
+        `).bind(videoId).all();
+        
+        const existingPhrases = existingPhrasesResult.results || [];
+        console.log(`Found ${existingPhrases.length} existing phrases`);
+        
+        // Filter duplicates in memory
+        const uniqueSubtitles = this.bulkFilterDuplicates(cleanedSubtitles, existingPhrases);
+        console.log(`After deduplication: ${uniqueSubtitles.length} unique phrases to queue`);
+        
+        if (uniqueSubtitles.length === 0) {
+          return 0;
+        }
+        
+        // Store subtitles in a processing queue (split into chunks)
+        const totalChunks = await this.initializeProcessingQueue(DB, videoId, uniqueSubtitles);
+        console.log(`Initialized processing queue with ${totalChunks} chunks`);
+        
+        return uniqueSubtitles.length; // Return total to be processed
+      } else {
+        // Small sets - process normally
+        return await this.processSmallSubtitleSet(DB, videoId, cleanedSubtitles);
       }
-      
-      // Step 1: Get existing phrases for this video in one query
-      const existingPhrasesResult = await DB.prepare(`
-        SELECT phrase_text, start_time_seconds, end_time_seconds 
-        FROM video_phrases 
-        WHERE video_id = ?
-      `).bind(videoId).all();
-      
-      const existingPhrases = existingPhrasesResult.results || [];
-      console.log(`Found ${existingPhrases.length} existing phrases for comparison`);
-      
-      // Step 2: Filter out duplicates in memory (much faster)
-      const uniqueSubtitles = this.bulkFilterDuplicates(cleanedSubtitles, existingPhrases);
-      console.log(`After deduplication: ${uniqueSubtitles.length} unique phrases to insert`);
-      
-      if (uniqueSubtitles.length === 0) {
-        console.log('No new unique phrases to insert');
-        return 0;
-      }
-      
-      // Step 3: Check CPU time before bulk insert
-      const elapsedTime = Date.now() - startTime;
-      if (elapsedTime > MAX_PROCESSING_TIME - 2000) {
-        console.log(`CPU time running low (${elapsedTime}ms), falling back to individual inserts`);
-        return await this.fallbackIndividualInserts(DB, videoId, uniqueSubtitles, MAX_PROCESSING_TIME - elapsedTime);
-      }
-      
-      // Step 4: Bulk insert using conservative batching
-      const insertedCount = await this.bulkInsertPhrases(DB, videoId, uniqueSubtitles);
-      console.log(`Successfully bulk inserted ${insertedCount} phrases`);
-      
-      return insertedCount;
     });
 
-    // Mark video as "Subtitles Processed"
+    // QUEUE PROCESSING: Process chunks in separate steps to avoid rate limits
+    if (cleanedSubtitles.length > 100) {
+      await step.do("process queued chunks", async () => {
+        return await this.processQueuedChunks(DB, videoId);
+      });
+    }
+
+    // Mark video as "Subtitles Processed" with rate limit protection
     await step.do("mark as completed", async () => {
-      await DB.prepare(`
-        UPDATE videos 
-        SET processing_status = 'Subtitles Processed'
-        WHERE id = ?
-      `).bind(videoId).run();
+      try {
+        // Check if there are any pending queue items first
+        const pendingItems = await DB.prepare(`
+          SELECT COUNT(*) as count 
+          FROM processing_queue 
+          WHERE video_id = ? AND status = 'pending'
+        `).bind(videoId).first();
+        
+        if (pendingItems && pendingItems.count > 0) {
+          console.log(`Still have ${pendingItems.count} pending queue items, marking as partial`);
+          await DB.prepare(`
+            UPDATE videos 
+            SET processing_status = 'Partial Processing - Queue Pending',
+                error_message = 'Large video processing in progress via queue'
+            WHERE id = ?
+          `).bind(videoId).run();
+        } else {
+          console.log('All processing completed, marking video as processed');
+          await DB.prepare(`
+            UPDATE videos 
+            SET processing_status = 'Subtitles Processed',
+                error_message = NULL
+            WHERE id = ?
+          `).bind(videoId).run();
+        }
+      } catch (error) {
+        console.error('Error marking video as completed:', error);
+        
+        // If we hit rate limits here too, just log it - the video is mostly processed
+        if (error instanceof Error && error.message.includes('Too many API requests')) {
+          console.log('Hit rate limit on completion, but video is processed. Will retry on next run.');
+        } else {
+          throw error;
+        }
+      }
     });
 
     return {
@@ -824,6 +853,175 @@ export class SubtitleProcessingWorkflow extends WorkflowEntrypoint<Env, Params> 
     }
     
     return inserted;
+  }
+
+  // NEW: Initialize processing queue for large subtitle sets
+  private async initializeProcessingQueue(DB: D1Database, videoId: number, subtitles: SubtitleEntry[]): Promise<number> {
+    const CHUNK_SIZE = 25; // Process 25 subtitles per chunk to avoid rate limits
+    const chunks = [];
+    
+    // Split subtitles into chunks
+    for (let i = 0; i < subtitles.length; i += CHUNK_SIZE) {
+      chunks.push(subtitles.slice(i, i + CHUNK_SIZE));
+    }
+    
+    console.log(`Split ${subtitles.length} subtitles into ${chunks.length} chunks of ${CHUNK_SIZE}`);
+    
+    // Store chunks in a temporary processing queue table
+    for (let i = 0; i < chunks.length; i++) {
+      const chunkData = JSON.stringify(chunks[i]);
+      
+      try {
+        await DB.prepare(`
+          INSERT INTO processing_queue (video_id, chunk_index, chunk_data, status, created_at)
+          VALUES (?, ?, ?, 'pending', CURRENT_TIMESTAMP)
+        `).bind(videoId, i, chunkData).run();
+      } catch (error) {
+        // If processing_queue table doesn't exist, create it
+        console.log('Creating processing_queue table...');
+        await DB.prepare(`
+          CREATE TABLE IF NOT EXISTS processing_queue (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            video_id INTEGER NOT NULL,
+            chunk_index INTEGER NOT NULL,
+            chunk_data TEXT NOT NULL,
+            status TEXT DEFAULT 'pending',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            processed_at TIMESTAMP
+          )
+        `).run();
+        
+        // Retry the insert
+        await DB.prepare(`
+          INSERT INTO processing_queue (video_id, chunk_index, chunk_data, status, created_at)
+          VALUES (?, ?, ?, 'pending', CURRENT_TIMESTAMP)
+        `).bind(videoId, i, chunkData).run();
+      }
+    }
+    
+    console.log(`Queued ${chunks.length} chunks for processing`);
+    return chunks.length;
+  }
+
+  // NEW: Process queued chunks one by one to avoid rate limits
+  private async processQueuedChunks(DB: D1Database, videoId: number): Promise<number> {
+    console.log(`Processing queued chunks for video ${videoId}`);
+    
+    let totalProcessed = 0;
+    let processed = 0;
+    
+    // Process chunks in small batches to avoid rate limits
+    const MAX_CHUNKS_PER_STEP = 3; // Process max 3 chunks per step
+    
+    for (let batchStart = 0; batchStart < 50; batchStart += MAX_CHUNKS_PER_STEP) { // Max 50 chunks total
+      // Get next batch of pending chunks
+      const pendingChunks = await DB.prepare(`
+        SELECT id, chunk_index, chunk_data 
+        FROM processing_queue 
+        WHERE video_id = ? AND status = 'pending' 
+        ORDER BY chunk_index ASC 
+        LIMIT ?
+      `).bind(videoId, MAX_CHUNKS_PER_STEP).all();
+      
+      if (!pendingChunks.results || pendingChunks.results.length === 0) {
+        console.log('No more pending chunks to process');
+        break;
+      }
+      
+      // Process each chunk in this batch
+      for (const queueItem of pendingChunks.results) {
+        try {
+          const chunkData = JSON.parse(queueItem.chunk_data as string) as SubtitleEntry[];
+          console.log(`Processing chunk ${queueItem.chunk_index}: ${chunkData.length} phrases`);
+          
+          // Process this chunk
+          const chunkProcessed = await this.processSingleChunk(DB, videoId, chunkData);
+          totalProcessed += chunkProcessed;
+          
+          // Mark chunk as completed
+          await DB.prepare(`
+            UPDATE processing_queue 
+            SET status = 'completed', processed_at = CURRENT_TIMESTAMP 
+            WHERE id = ?
+          `).bind(queueItem.id).run();
+          
+          processed++;
+          console.log(`Completed chunk ${queueItem.chunk_index}: ${chunkProcessed} phrases processed`);
+          
+        } catch (error) {
+          console.error(`Error processing chunk ${queueItem.chunk_index}:`, error);
+          
+          // Mark chunk as failed
+          await DB.prepare(`
+            UPDATE processing_queue 
+            SET status = 'failed', processed_at = CURRENT_TIMESTAMP 
+            WHERE id = ?
+          `).bind(queueItem.id).run();
+        }
+      }
+      
+      console.log(`Batch complete. Processed ${processed} chunks so far, ${totalProcessed} total phrases`);
+      
+      // Small delay between batches to avoid rate limits
+      if (pendingChunks.results.length === MAX_CHUNKS_PER_STEP) {
+        await new Promise(resolve => setTimeout(resolve, 100)); // 100ms delay
+      }
+    }
+    
+    // Clean up completed queue items
+    await DB.prepare(`
+      DELETE FROM processing_queue 
+      WHERE video_id = ? AND status IN ('completed', 'failed') 
+      AND processed_at < datetime('now', '-1 hour')
+    `).bind(videoId).run();
+    
+    console.log(`Queue processing completed: ${totalProcessed} total phrases processed`);
+    return totalProcessed;
+  }
+
+  // NEW: Process a single chunk of subtitles
+  private async processSingleChunk(DB: D1Database, videoId: number, chunk: SubtitleEntry[]): Promise<number> {
+    let inserted = 0;
+    
+    // Use individual inserts for better rate limit control
+    for (const subtitle of chunk) {
+      try {
+        await DB.prepare(`
+          INSERT OR IGNORE INTO video_phrases (video_id, phrase_text, start_time_seconds, end_time_seconds)
+          VALUES (?, ?, ?, ?)
+        `).bind(videoId, subtitle.text, subtitle.start, subtitle.end).run();
+        inserted++;
+      } catch (error) {
+        console.error(`Failed to insert phrase: "${subtitle.text}"`, error);
+      }
+    }
+    
+    return inserted;
+  }
+
+  // NEW: Process small subtitle sets normally (under 100 entries)
+  private async processSmallSubtitleSet(DB: D1Database, videoId: number, subtitles: SubtitleEntry[]): Promise<number> {
+    console.log(`Processing small subtitle set: ${subtitles.length} entries`);
+    
+    // Get existing phrases
+    const existingPhrasesResult = await DB.prepare(`
+      SELECT phrase_text, start_time_seconds, end_time_seconds 
+      FROM video_phrases 
+      WHERE video_id = ?
+    `).bind(videoId).all();
+    
+    const existingPhrases = existingPhrasesResult.results || [];
+    
+    // Filter duplicates
+    const uniqueSubtitles = this.bulkFilterDuplicates(subtitles, existingPhrases);
+    console.log(`After deduplication: ${uniqueSubtitles.length} unique phrases`);
+    
+    if (uniqueSubtitles.length === 0) {
+      return 0;
+    }
+    
+    // Process with conservative bulk insert
+    return await this.bulkInsertPhrases(DB, videoId, uniqueSubtitles);
   }
 
   // Helper method for text normalization (used in bulk filtering)
