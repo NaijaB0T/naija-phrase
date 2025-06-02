@@ -29,7 +29,7 @@ const statusCounts = await DB.prepare(`
   GROUP BY processing_status
 `).all();
 
-const failedCount = statusCounts.results?.filter(s => s.processing_status.startsWith('Error')).reduce((sum, s) => sum + s.count, 0) || 0;
+const failedCount = statusCounts.results?.filter(s => s.processing_status.startsWith('Error') || s.processing_status.startsWith('Partial Processing')).reduce((sum, s) => sum + s.count, 0) || 0;
 const pendingCount = statusCounts.results?.find(s => s.processing_status === 'Pending Subtitle Processing')?.count || 0;
 const processedCount = statusCounts.results?.find(s => s.processing_status === 'Subtitles Processed')?.count || 0;
 
@@ -38,7 +38,10 @@ const getStatusIcon = (status: string) => {
     case 'Subtitles Processed': return CheckCircle;
     case 'Processing Subtitles': return Clock;
     case 'Error - No Subtitles': return AlertCircle;
-    default: return Clock;
+    default:
+      if (status.startsWith('Error')) return X;
+      if (status.startsWith('Partial Processing')) return AlertCircle;
+      return Clock;
   }
 };
 
@@ -47,12 +50,36 @@ const getStatusColor = (status: string) => {
     case 'Subtitles Processed': return 'text-green-600';
     case 'Processing Subtitles': return 'text-blue-600';
     case 'Error - No Subtitles': return 'text-red-600';
-    default: return 'text-gray-600';
+    default: 
+      if (status.startsWith('Error')) return 'text-red-600';
+      if (status.startsWith('Partial Processing')) return 'text-orange-600';
+      return 'text-gray-600';
   }
 };
 ---
 
 <Layout title="Videos - Admin">
+  <style>
+    .monitoring-area {
+      min-width: 200px;
+    }
+    .progress-bar {
+      height: 4px;
+      background: #e5e7eb;
+      border-radius: 2px;
+      overflow: hidden;
+    }
+    .progress-fill {
+      transition: width 0.3s ease;
+    }
+    .worker-status {
+      font-size: 11px;
+    }
+    .refresh-btn:hover {
+      background: #dc2626 !important;
+    }
+  </style>
+  
   <div class="space-y-6">
     <div class="flex items-center justify-between">
       <div>
@@ -145,7 +172,7 @@ const getStatusColor = (status: string) => {
                       Process
                     </button>
                   )}
-                  {video.processing_status.startsWith('Error') && (
+                  {(video.processing_status.startsWith('Error') || video.processing_status.startsWith('Partial Processing')) && (
                     <button 
                       class="retry-video-btn text-xs bg-green-600 text-white px-3 py-1 rounded hover:bg-green-700 transition-colors"
                       data-video-id={video.id}
@@ -155,9 +182,17 @@ const getStatusColor = (status: string) => {
                     </button>
                   )}
                   {video.processing_status === 'Processing Subtitles' && (
-                    <span class="text-xs bg-yellow-100 text-yellow-800 px-3 py-1 rounded">
-                      ⏳ Processing...
-                    </span>
+                    <div id={`monitor-${video.id}`} class="monitoring-area">
+                      <div class="text-xs bg-yellow-100 text-yellow-800 px-3 py-1 rounded mb-1">
+                        ⏳ Processing...
+                      </div>
+                      <div class="worker-status text-xs text-gray-600" data-video-id={video.id}>
+                        <div class="progress-bar bg-gray-200 rounded h-1 mb-1">
+                          <div class="progress-fill bg-blue-500 h-1 rounded" style="width: 0%"></div>
+                        </div>
+                        <div class="status-text">Checking status...</div>
+                      </div>
+                    </div>
                   )}
                   <button 
                     class="details-video-btn text-xs border px-3 py-1 rounded hover:bg-muted transition-colors"
@@ -199,7 +234,90 @@ const getStatusColor = (status: string) => {
 </div>
 
 <script>
+  // SIMPLE WORKER MONITORING - NO BULLSHIT
+  async function updateWorkerStatus(videoId) {
+    try {
+      const response = await fetch(`/api/admin/worker-status?videoId=${videoId}`);
+      const data = await response.json();
+      
+      const statusEl = document.querySelector(`[data-video-id="${videoId}"]`);
+      if (!statusEl) return;
+      
+      const progressFill = statusEl.querySelector('.progress-fill');
+      const statusText = statusEl.querySelector('.status-text');
+      
+      if (data.monitoring) {
+        const { stage, progress, phraseCount, isStuck, timeSinceLastUpdate } = data.monitoring;
+        
+        // Update progress bar
+        if (progressFill) {
+          progressFill.style.width = `${progress}%`;
+          progressFill.className = `progress-fill h-1 rounded ${
+            isStuck ? 'bg-red-500' : progress === 100 ? 'bg-green-500' : 'bg-blue-500'
+          }`;
+        }
+        
+        // Update status text
+        if (statusText) {
+          let message = '';
+          switch (stage) {
+            case 'fetching_subtitles': message = '📥 Fetching subtitles...'; break;
+            case 'indexing_phrases': message = `📝 Indexing phrases (${phraseCount})...`; break;
+            case 'completed': message = `✅ Done! ${phraseCount} phrases`; break;
+            case 'stuck_fetching': message = `⚠️ STUCK fetching (${timeSinceLastUpdate}m)`; break;
+            case 'stuck_indexing': message = `⚠️ STUCK indexing (${timeSinceLastUpdate}m)`; break;
+            default: message = '🔄 Processing...';
+          }
+          statusText.textContent = message;
+          
+          // If stuck, add refresh button
+          if (isStuck && !statusText.querySelector('.refresh-btn')) {
+            const refreshBtn = document.createElement('button');
+            refreshBtn.className = 'refresh-btn text-xs bg-red-500 text-white px-2 py-1 rounded ml-2';
+            refreshBtn.textContent = 'Refresh Page';
+            refreshBtn.onclick = () => location.reload();
+            statusText.appendChild(refreshBtn);
+          }
+        }
+        
+        // If completed, reload page to update status
+        if (stage === 'completed') {
+          setTimeout(() => location.reload(), 2000);
+        }
+      }
+    } catch (error) {
+      console.error(`Monitor error for video ${videoId}:`, error);
+    }
+  }
+
+  // Start monitoring for processing videos
   document.addEventListener('DOMContentLoaded', function() {
+    // Find all processing videos and start monitoring
+    const processingVideos = document.querySelectorAll('[data-video-id]');
+    const monitoringIntervals = new Map();
+    
+    processingVideos.forEach(statusEl => {
+      const videoId = statusEl.getAttribute('data-video-id');
+      if (videoId) {
+        // Initial status check
+        updateWorkerStatus(videoId);
+        
+        // Poll every 3 seconds
+        const intervalId = setInterval(() => {
+          updateWorkerStatus(videoId);
+        }, 3000);
+        
+        monitoringIntervals.set(videoId, intervalId);
+      }
+    });
+    
+    // Clean up intervals when page unloads
+    window.addEventListener('beforeunload', () => {
+      monitoringIntervals.forEach(intervalId => clearInterval(intervalId));
+    });
+
+    // Original event listeners below...
+    
     // Add event listeners to all process video buttons
     document.querySelectorAll('.process-video-btn').forEach(button => {
       button.addEventListener('click', async function() {

@@ -8,15 +8,17 @@ export const POST: APIRoute = async ({ request, locals }) => {
     let videosToRetry = [];
     
     if (retryAll) {
+      // Include both Error videos and Partial Processing videos
       const errorVideos = await DB.prepare(`
         SELECT id, youtube_video_id FROM videos 
-        WHERE processing_status LIKE 'Error%' ORDER BY created_at DESC LIMIT 20
+        WHERE (processing_status LIKE 'Error%' OR processing_status LIKE 'Partial Processing%') 
+        ORDER BY created_at DESC LIMIT 20
       `).all();
       videosToRetry = errorVideos.results || [];
     } else if (videoId) {
       const video = await DB.prepare(`
         SELECT id, youtube_video_id FROM videos 
-        WHERE id = ? AND processing_status LIKE 'Error%'
+        WHERE id = ? AND (processing_status LIKE 'Error%' OR processing_status LIKE 'Partial Processing%')
       `).bind(videoId).first();
       if (video) videosToRetry = [video];
     }

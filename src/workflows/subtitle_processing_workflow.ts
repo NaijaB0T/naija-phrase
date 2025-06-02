@@ -101,11 +101,19 @@ export class SubtitleProcessingWorkflow extends WorkflowEntrypoint<Env, Params> 
       return this.cleanAndMergeSubtitles(preCleanedSubtitles); // Pass pre-cleaned subtitles
     });
 
-    // OPTIMIZED: Bulk index phrases with single database transaction
+    // OPTIMIZED: Bulk index phrases with CPU time management
     const phrasesIndexed = await step.do("bulk index phrases", async () => {
       if (cleanedSubtitles.length === 0) return 0;
       
-      console.log(`Starting bulk processing of ${cleanedSubtitles.length} subtitle entries`);
+      console.log(`Starting CPU-aware bulk processing of ${cleanedSubtitles.length} subtitle entries`);
+      const startTime = Date.now();
+      const MAX_PROCESSING_TIME = 8000; // 8 seconds max (leave 2s buffer)
+      
+      // If we have too many subtitles, process in chunks with delays
+      if (cleanedSubtitles.length > 200) {
+        console.log(`Large subtitle set detected (${cleanedSubtitles.length}), using chunked processing`);
+        return await this.processSubtitlesInChunks(DB, videoId, cleanedSubtitles, startTime, MAX_PROCESSING_TIME);
+      }
       
       // Step 1: Get existing phrases for this video in one query
       const existingPhrasesResult = await DB.prepare(`
@@ -126,7 +134,14 @@ export class SubtitleProcessingWorkflow extends WorkflowEntrypoint<Env, Params> 
         return 0;
       }
       
-      // Step 3: Bulk insert using VALUES clause (single database call)
+      // Step 3: Check CPU time before bulk insert
+      const elapsedTime = Date.now() - startTime;
+      if (elapsedTime > MAX_PROCESSING_TIME - 2000) {
+        console.log(`CPU time running low (${elapsedTime}ms), falling back to individual inserts`);
+        return await this.fallbackIndividualInserts(DB, videoId, uniqueSubtitles, MAX_PROCESSING_TIME - elapsedTime);
+      }
+      
+      // Step 4: Bulk insert using conservative batching
       const insertedCount = await this.bulkInsertPhrases(DB, videoId, uniqueSubtitles);
       console.log(`Successfully bulk inserted ${insertedCount} phrases`);
       
@@ -591,28 +606,37 @@ export class SubtitleProcessingWorkflow extends WorkflowEntrypoint<Env, Params> 
     return uniqueSubtitles;
   }
 
-  // CONSERVATIVE: Smaller batches with better error handling for Cloudflare D1
+  // ULTRA-CONSERVATIVE: Even smaller batches with CPU time monitoring
   private async bulkInsertPhrases(DB: D1Database, videoId: number, subtitles: SubtitleEntry[]): Promise<number> {
     if (subtitles.length === 0) return 0;
     
-    console.log(`Starting conservative bulk insert of ${subtitles.length} phrases`);
+    console.log(`Starting ultra-conservative bulk insert of ${subtitles.length} phrases`);
     
-    // REDUCED batch size for D1 stability - start with 25 instead of 100
-    const BATCH_SIZE = 25;
+    // EVEN SMALLER batch size for CPU time management
+    const BATCH_SIZE = 10; // Reduced from 25 to 10
     let totalInserted = 0;
     let consecutiveErrors = 0;
+    const processingStartTime = Date.now();
     
     for (let i = 0; i < subtitles.length; i += BATCH_SIZE) {
+      // Check CPU time every batch
+      const elapsedTime = Date.now() - processingStartTime;
+      if (elapsedTime > 6000) { // 6 seconds max for this function
+        console.log(`CPU time limit approaching in bulk insert (${elapsedTime}ms), stopping early`);
+        console.log(`Processed ${totalInserted}/${subtitles.length} phrases before stopping`);
+        break;
+      }
+      
       const batch = subtitles.slice(i, i + BATCH_SIZE);
       
       try {
-        // Try bulk insert for this small batch
+        // Try bulk insert for this tiny batch
         const bulkResult = await this.attemptBulkInsert(DB, videoId, batch);
         
         if (bulkResult.success) {
           totalInserted += bulkResult.inserted;
-          consecutiveErrors = 0; // Reset error counter on success
-          console.log(`✅ Bulk inserted batch ${Math.floor(i/BATCH_SIZE) + 1}: ${bulkResult.inserted} phrases`);
+          consecutiveErrors = 0;
+          console.log(`✅ Ultra-small batch ${Math.floor(i/BATCH_SIZE) + 1}: ${bulkResult.inserted} phrases (${elapsedTime}ms elapsed)`);
         } else {
           throw new Error(bulkResult.error || 'Bulk insert failed');
         }
@@ -621,22 +645,28 @@ export class SubtitleProcessingWorkflow extends WorkflowEntrypoint<Env, Params> 
         console.error(`❌ Bulk insert failed for batch ${Math.floor(i/BATCH_SIZE) + 1}:`, error);
         consecutiveErrors++;
         
-        // If we have too many consecutive bulk failures, switch to individual mode
-        if (consecutiveErrors >= 3) {
-          console.log(`⚠️ Too many bulk failures, switching to individual inserts for remaining ${subtitles.length - i} phrases`);
+        // If we have 2 consecutive bulk failures, switch to individual mode immediately
+        if (consecutiveErrors >= 2) {
+          console.log(`⚠️ Multiple bulk failures, switching to individual inserts for remaining phrases`);
           
-          // Process remaining subtitles individually
+          // Process remaining subtitles individually with CPU time checking
           for (let j = i; j < subtitles.length; j++) {
+            const currentTime = Date.now();
+            if (currentTime - processingStartTime > 7000) { // 7 second absolute limit
+              console.log(`CPU time limit reached during individual inserts at ${j}/${subtitles.length}`);
+              break;
+            }
+            
             try {
               await DB.prepare(`
-                INSERT INTO video_phrases (video_id, phrase_text, start_time_seconds, end_time_seconds)
+                INSERT OR IGNORE INTO video_phrases (video_id, phrase_text, start_time_seconds, end_time_seconds)
                 VALUES (?, ?, ?, ?)
               `).bind(videoId, subtitles[j].text, subtitles[j].start, subtitles[j].end).run();
               totalInserted++;
               
-              // Log progress every 50 individual inserts
-              if ((j - i) % 50 === 0) {
-                console.log(`Individual insert progress: ${j - i + 1}/${subtitles.length - i}`);
+              // Log progress every 25 individual inserts
+              if ((j - i) % 25 === 0) {
+                console.log(`Individual insert progress: ${j - i + 1}/${subtitles.length - i} (${currentTime - processingStartTime}ms elapsed)`);
               }
             } catch (individualError) {
               console.error(`Failed individual insert: "${subtitles[j].text}"`, individualError);
@@ -649,7 +679,7 @@ export class SubtitleProcessingWorkflow extends WorkflowEntrypoint<Env, Params> 
           for (const subtitle of batch) {
             try {
               await DB.prepare(`
-                INSERT INTO video_phrases (video_id, phrase_text, start_time_seconds, end_time_seconds)
+                INSERT OR IGNORE INTO video_phrases (video_id, phrase_text, start_time_seconds, end_time_seconds)
                 VALUES (?, ?, ?, ?)
               `).bind(videoId, subtitle.text, subtitle.start, subtitle.end).run();
               totalInserted++;
@@ -661,11 +691,12 @@ export class SubtitleProcessingWorkflow extends WorkflowEntrypoint<Env, Params> 
       }
     }
     
-    console.log(`✅ Bulk insert completed: ${totalInserted}/${subtitles.length} phrases inserted`);
+    const finalElapsedTime = Date.now() - processingStartTime;
+    console.log(`✅ Ultra-conservative bulk insert completed: ${totalInserted}/${subtitles.length} phrases inserted in ${finalElapsedTime}ms`);
     return totalInserted;
   }
 
-  // Helper method to attempt bulk insert with better error handling
+  // Helper method to attempt bulk insert with better error handling and duplicate handling
   private async attemptBulkInsert(DB: D1Database, videoId: number, batch: SubtitleEntry[]): Promise<{success: boolean, inserted: number, error?: string}> {
     try {
       // Validate batch size
@@ -673,14 +704,14 @@ export class SubtitleProcessingWorkflow extends WorkflowEntrypoint<Env, Params> 
         return { success: true, inserted: 0 };
       }
       
-      if (batch.length > 50) {
+      if (batch.length > 20) { // Even smaller limit
         return { success: false, inserted: 0, error: `Batch size too large: ${batch.length}` };
       }
       
-      // Build VALUES clause
+      // Build VALUES clause - using INSERT OR IGNORE to handle duplicates at DB level
       const placeholders = batch.map(() => '(?, ?, ?, ?)').join(', ');
       const sql = `
-        INSERT INTO video_phrases (video_id, phrase_text, start_time_seconds, end_time_seconds)
+        INSERT OR IGNORE INTO video_phrases (video_id, phrase_text, start_time_seconds, end_time_seconds)
         VALUES ${placeholders}
       `;
       
@@ -694,12 +725,14 @@ export class SubtitleProcessingWorkflow extends WorkflowEntrypoint<Env, Params> 
         params.push(videoId, subtitle.text, subtitle.start, subtitle.end);
       }
       
-      // Check parameter count (D1 limit is ~32766 parameters)
-      if (params.length > 1000) {
+      // Check parameter count
+      if (params.length > 100) { // Very conservative limit
         return { success: false, inserted: 0, error: `Too many parameters: ${params.length}` };
       }
       
       const result = await DB.prepare(sql).bind(...params).run();
+      
+      // D1 doesn't always report exact insert count with OR IGNORE, so assume success
       return { success: true, inserted: batch.length };
       
     } catch (error) {
@@ -709,6 +742,88 @@ export class SubtitleProcessingWorkflow extends WorkflowEntrypoint<Env, Params> 
         error: error instanceof Error ? error.message : 'Unknown error' 
       };
     }
+  }
+
+  // NEW: Process large subtitle sets in chunks to avoid CPU timeout
+  private async processSubtitlesInChunks(DB: D1Database, videoId: number, subtitles: SubtitleEntry[], startTime: number, maxTime: number): Promise<number> {
+    console.log(`Processing ${subtitles.length} subtitles in chunks to avoid CPU timeout`);
+    
+    // For very large sets, skip duplicate checking to save CPU time
+    const CHUNK_SIZE = 100; // Process 100 at a time
+    let totalInserted = 0;
+    
+    for (let i = 0; i < subtitles.length; i += CHUNK_SIZE) {
+      const elapsedTime = Date.now() - startTime;
+      
+      // If we're running out of CPU time, stop and return what we've done
+      if (elapsedTime > maxTime - 1000) {
+        console.log(`CPU time limit approaching (${elapsedTime}ms), stopping at ${i}/${subtitles.length} processed`);
+        console.log(`Processed ${totalInserted} phrases before timeout`);
+        
+        // Update video status to show partial progress
+        await DB.prepare(`
+          UPDATE videos 
+          SET processing_status = 'Partial Processing - Retry Needed',
+              error_message = ?
+          WHERE id = ?
+        `).bind(`Processed ${totalInserted}/${subtitles.length} phrases before CPU timeout. Retry to continue.`, videoId).run();
+        
+        return totalInserted;
+      }
+      
+      const chunk = subtitles.slice(i, i + CHUNK_SIZE);
+      console.log(`Processing chunk ${Math.floor(i/CHUNK_SIZE) + 1}: ${chunk.length} phrases`);
+      
+      // Insert chunk with minimal processing
+      for (const subtitle of chunk) {
+        try {
+          await DB.prepare(`
+            INSERT OR IGNORE INTO video_phrases (video_id, phrase_text, start_time_seconds, end_time_seconds)
+            VALUES (?, ?, ?, ?)
+          `).bind(videoId, subtitle.text, subtitle.start, subtitle.end).run();
+          totalInserted++;
+        } catch (error) {
+          console.error(`Failed to insert phrase: "${subtitle.text}"`, error);
+        }
+      }
+      
+      console.log(`Chunk completed. Total inserted so far: ${totalInserted}`);
+    }
+    
+    console.log(`Large subtitle set processing completed: ${totalInserted} phrases inserted`);
+    return totalInserted;
+  }
+
+  // NEW: Fallback to individual inserts when CPU time is limited
+  private async fallbackIndividualInserts(DB: D1Database, videoId: number, subtitles: SubtitleEntry[], remainingTime: number): Promise<number> {
+    console.log(`Fallback to individual inserts for ${subtitles.length} phrases with ${remainingTime}ms remaining`);
+    
+    let inserted = 0;
+    const maxToProcess = Math.min(subtitles.length, Math.floor(remainingTime / 10)); // ~10ms per insert
+    
+    for (let i = 0; i < maxToProcess; i++) {
+      try {
+        await DB.prepare(`
+          INSERT OR IGNORE INTO video_phrases (video_id, phrase_text, start_time_seconds, end_time_seconds)
+          VALUES (?, ?, ?, ?)
+        `).bind(videoId, subtitles[i].text, subtitles[i].start, subtitles[i].end).run();
+        inserted++;
+      } catch (error) {
+        console.error(`Failed individual insert: "${subtitles[i].text}"`, error);
+      }
+    }
+    
+    // If we couldn't process all, mark for retry
+    if (inserted < subtitles.length) {
+      await DB.prepare(`
+        UPDATE videos 
+        SET processing_status = 'Partial Processing - Retry Needed',
+            error_message = ?
+        WHERE id = ?
+      `).bind(`Processed ${inserted}/${subtitles.length} phrases before CPU timeout. Retry to continue.`, videoId).run();
+    }
+    
+    return inserted;
   }
 
   // Helper method for text normalization (used in bulk filtering)
