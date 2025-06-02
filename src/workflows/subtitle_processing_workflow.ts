@@ -591,53 +591,124 @@ export class SubtitleProcessingWorkflow extends WorkflowEntrypoint<Env, Params> 
     return uniqueSubtitles;
   }
 
-  // OPTIMIZED: Bulk insert using single SQL statement with multiple VALUES
+  // CONSERVATIVE: Smaller batches with better error handling for Cloudflare D1
   private async bulkInsertPhrases(DB: D1Database, videoId: number, subtitles: SubtitleEntry[]): Promise<number> {
     if (subtitles.length === 0) return 0;
     
-    // SQLite/D1 has a limit on the number of parameters, so batch in chunks of 100
-    const BATCH_SIZE = 100;
+    console.log(`Starting conservative bulk insert of ${subtitles.length} phrases`);
+    
+    // REDUCED batch size for D1 stability - start with 25 instead of 100
+    const BATCH_SIZE = 25;
     let totalInserted = 0;
+    let consecutiveErrors = 0;
     
     for (let i = 0; i < subtitles.length; i += BATCH_SIZE) {
       const batch = subtitles.slice(i, i + BATCH_SIZE);
       
-      // Build VALUES clause for bulk insert
+      try {
+        // Try bulk insert for this small batch
+        const bulkResult = await this.attemptBulkInsert(DB, videoId, batch);
+        
+        if (bulkResult.success) {
+          totalInserted += bulkResult.inserted;
+          consecutiveErrors = 0; // Reset error counter on success
+          console.log(`✅ Bulk inserted batch ${Math.floor(i/BATCH_SIZE) + 1}: ${bulkResult.inserted} phrases`);
+        } else {
+          throw new Error(bulkResult.error || 'Bulk insert failed');
+        }
+        
+      } catch (error) {
+        console.error(`❌ Bulk insert failed for batch ${Math.floor(i/BATCH_SIZE) + 1}:`, error);
+        consecutiveErrors++;
+        
+        // If we have too many consecutive bulk failures, switch to individual mode
+        if (consecutiveErrors >= 3) {
+          console.log(`⚠️ Too many bulk failures, switching to individual inserts for remaining ${subtitles.length - i} phrases`);
+          
+          // Process remaining subtitles individually
+          for (let j = i; j < subtitles.length; j++) {
+            try {
+              await DB.prepare(`
+                INSERT INTO video_phrases (video_id, phrase_text, start_time_seconds, end_time_seconds)
+                VALUES (?, ?, ?, ?)
+              `).bind(videoId, subtitles[j].text, subtitles[j].start, subtitles[j].end).run();
+              totalInserted++;
+              
+              // Log progress every 50 individual inserts
+              if ((j - i) % 50 === 0) {
+                console.log(`Individual insert progress: ${j - i + 1}/${subtitles.length - i}`);
+              }
+            } catch (individualError) {
+              console.error(`Failed individual insert: "${subtitles[j].text}"`, individualError);
+            }
+          }
+          break; // Exit the batch loop
+        } else {
+          // Fallback: individual inserts for this batch only
+          console.log(`Fallback to individual inserts for batch ${Math.floor(i/BATCH_SIZE) + 1}`);
+          for (const subtitle of batch) {
+            try {
+              await DB.prepare(`
+                INSERT INTO video_phrases (video_id, phrase_text, start_time_seconds, end_time_seconds)
+                VALUES (?, ?, ?, ?)
+              `).bind(videoId, subtitle.text, subtitle.start, subtitle.end).run();
+              totalInserted++;
+            } catch (individualError) {
+              console.error(`Failed individual insert: "${subtitle.text}"`, individualError);
+            }
+          }
+        }
+      }
+    }
+    
+    console.log(`✅ Bulk insert completed: ${totalInserted}/${subtitles.length} phrases inserted`);
+    return totalInserted;
+  }
+
+  // Helper method to attempt bulk insert with better error handling
+  private async attemptBulkInsert(DB: D1Database, videoId: number, batch: SubtitleEntry[]): Promise<{success: boolean, inserted: number, error?: string}> {
+    try {
+      // Validate batch size
+      if (batch.length === 0) {
+        return { success: true, inserted: 0 };
+      }
+      
+      if (batch.length > 50) {
+        return { success: false, inserted: 0, error: `Batch size too large: ${batch.length}` };
+      }
+      
+      // Build VALUES clause
       const placeholders = batch.map(() => '(?, ?, ?, ?)').join(', ');
       const sql = `
         INSERT INTO video_phrases (video_id, phrase_text, start_time_seconds, end_time_seconds)
         VALUES ${placeholders}
       `;
       
-      // Flatten parameters: [videoId, text, start, end, videoId, text, start, end, ...]
+      // Flatten parameters
       const params: any[] = [];
       for (const subtitle of batch) {
+        // Validate subtitle data
+        if (!subtitle.text || typeof subtitle.start !== 'number' || typeof subtitle.end !== 'number') {
+          return { success: false, inserted: 0, error: 'Invalid subtitle data' };
+        }
         params.push(videoId, subtitle.text, subtitle.start, subtitle.end);
       }
       
-      try {
-        const result = await DB.prepare(sql).bind(...params).run();
-        totalInserted += batch.length;
-        console.log(`Bulk inserted batch of ${batch.length} phrases (total: ${totalInserted})`);
-      } catch (error) {
-        console.error(`Error in bulk insert batch ${i}-${i + batch.length}:`, error);
-        
-        // Fallback: individual inserts for this batch if bulk fails
-        for (const subtitle of batch) {
-          try {
-            await DB.prepare(`
-              INSERT INTO video_phrases (video_id, phrase_text, start_time_seconds, end_time_seconds)
-              VALUES (?, ?, ?, ?)
-            `).bind(videoId, subtitle.text, subtitle.start, subtitle.end).run();
-            totalInserted++;
-          } catch (individualError) {
-            console.error(`Failed to insert individual phrase: "${subtitle.text}"`, individualError);
-          }
-        }
+      // Check parameter count (D1 limit is ~32766 parameters)
+      if (params.length > 1000) {
+        return { success: false, inserted: 0, error: `Too many parameters: ${params.length}` };
       }
+      
+      const result = await DB.prepare(sql).bind(...params).run();
+      return { success: true, inserted: batch.length };
+      
+    } catch (error) {
+      return { 
+        success: false, 
+        inserted: 0, 
+        error: error instanceof Error ? error.message : 'Unknown error' 
+      };
     }
-    
-    return totalInserted;
   }
 
   // Helper method for text normalization (used in bulk filtering)
