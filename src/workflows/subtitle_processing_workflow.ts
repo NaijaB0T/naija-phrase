@@ -101,7 +101,7 @@ export class SubtitleProcessingWorkflow extends WorkflowEntrypoint<Env, Params> 
       return this.cleanAndMergeSubtitles(preCleanedSubtitles); // Pass pre-cleaned subtitles
     });
 
-    // Index phrases from subtitles
+    // Index phrases from subtitles with IMPROVED duplicate prevention
     const phrasesIndexed = await step.do("index phrases", async () => {
       let indexedCount = 0;
       
@@ -109,11 +109,18 @@ export class SubtitleProcessingWorkflow extends WorkflowEntrypoint<Env, Params> 
         try {
           // No need to call cleanText again here, as it's already cleaned
           if (subtitle.text.trim().length > 0) {
-            await DB.prepare(`
-              INSERT INTO video_phrases (video_id, phrase_text, start_time_seconds, end_time_seconds)
-              VALUES (?, ?, ?, ?)
-            `).bind(videoId, subtitle.text, subtitle.start, subtitle.end).run();
-            indexedCount++;
+            // IMPROVED: Check for similar phrases before insertion
+            const isDuplicate = await this.checkForSimilarPhrase(DB, videoId, subtitle.text, subtitle.start);
+            
+            if (!isDuplicate) {
+              await DB.prepare(`
+                INSERT INTO video_phrases (video_id, phrase_text, start_time_seconds, end_time_seconds)
+                VALUES (?, ?, ?, ?)
+              `).bind(videoId, subtitle.text, subtitle.start, subtitle.end).run();
+              indexedCount++;
+            } else {
+              console.log(`Skipping similar phrase: "${subtitle.text}" at ${subtitle.start}s`);
+            }
           }
         } catch (error: unknown) {
           console.error(`Error indexing phrase:`, error);
@@ -365,8 +372,8 @@ export class SubtitleProcessingWorkflow extends WorkflowEntrypoint<Env, Params> 
     return parseFloat(timeStr);
   }
 
-  // Constants for subtitle cleaning
-  private readonly TIME_LEEWAY_MS = 750; // Up to 0.75 seconds gap allowed for merging continuations
+  // Constants for subtitle cleaning - IMPROVED for AI captions
+  private readonly TIME_LEEWAY_MS = 2000; // Up to 2 seconds gap allowed for merging AI captions (was 750)
   private readonly OVERLAP_WORD_COUNT = 3; // Max words to check for stitching overlap
 
   // Helper method to convert time string (HH:MM:SS.mmm) to milliseconds
@@ -400,7 +407,7 @@ export class SubtitleProcessingWorkflow extends WorkflowEntrypoint<Env, Params> 
     return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${String(milliseconds).padStart(3, '0')}`;
   }
 
-  // Helper method for text merging logic
+  // Helper method for text merging logic - IMPROVED for AI captions
   private attemptTextMerge(textA: string, textB: string): string | null {
     const normA = (textA || "").trim();
     const normB = (textB || "").trim();
@@ -421,7 +428,24 @@ export class SubtitleProcessingWorkflow extends WorkflowEntrypoint<Env, Params> 
         return textA; // Use original textA
     }
 
-    // 3. Stitching: Last few words of normA are the first few words of normB
+    // 3. IMPROVED: Better similarity check for AI captions with punctuation variations
+    const cleanA = normALower.replace(/[^\w\s]/g, '');
+    const cleanB = normBLower.replace(/[^\w\s]/g, '');
+    
+    if (cleanA === cleanB && cleanA.length > 0) {
+        // Same text with different punctuation - return longer version
+        return textA.length >= textB.length ? textA : textB;
+    }
+
+    // 4. IMPROVED: Progressive reveal with punctuation tolerance
+    if (cleanB.startsWith(cleanA) && cleanB.length > cleanA.length) {
+        return textB;
+    }
+    if (cleanA.startsWith(cleanB) && cleanA.length > cleanB.length) {
+        return textA;
+    }
+
+    // 5. Stitching: Last few words of normA are the first few words of normB
     const wordsA = textA.split(/\s+/); // Split by any whitespace
     const wordsB = textB.split(/\s+/);
 
@@ -505,5 +529,63 @@ export class SubtitleProcessingWorkflow extends WorkflowEntrypoint<Env, Params> 
       .replace(/&#39;/g, "'")   // Fix apostrophes
       .replace(/"/g, '"')  // Fix quotes
       .trim();
+  }
+
+  // NEW: Check for similar phrases before database insertion to prevent duplicates
+  private async checkForSimilarPhrase(DB: D1Database, videoId: number, text: string, startTime: number): Promise<boolean> {
+    try {
+      // First check for exact matches within a small time window
+      const exactMatch = await DB.prepare(`
+        SELECT id FROM video_phrases 
+        WHERE video_id = ? AND phrase_text = ? AND ABS(start_time_seconds - ?) < 1.0
+      `).bind(videoId, text, startTime).first();
+      
+      if (exactMatch) {
+        return true; // Found exact duplicate
+      }
+
+      // For longer phrases, check for highly similar matches
+      if (text.length > 20) {
+        const similarPhrases = await DB.prepare(`
+          SELECT phrase_text, start_time_seconds FROM video_phrases 
+          WHERE video_id = ? AND ABS(start_time_seconds - ?) < 3.0
+          AND LENGTH(phrase_text) BETWEEN ? AND ?
+        `).bind(videoId, startTime, text.length - 10, text.length + 10).all();
+        
+        for (const phrase of (similarPhrases.results || [])) {
+          const similarity = this.calculateTextSimilarity(text, phrase.phrase_text as string);
+          if (similarity > 0.9) { // 90% similarity threshold
+            return true; // Found similar duplicate
+          }
+        }
+      }
+
+      return false; // No duplicates found
+    } catch (error) {
+      console.error('Error checking for similar phrases:', error);
+      return false; // On error, allow insertion
+    }
+  }
+
+  // NEW: Calculate text similarity for duplicate detection
+  private calculateTextSimilarity(text1: string, text2: string): number {
+    const normalize = (text: string) => text.toLowerCase().replace(/[^\w\s]/g, '').trim();
+    const norm1 = normalize(text1);
+    const norm2 = normalize(text2);
+    
+    if (norm1 === norm2) return 1.0; // 100% identical
+    
+    // Check substring containment (progressive reveals)
+    if (norm1.includes(norm2) || norm2.includes(norm1)) {
+      return 0.9; // 90% similar for containment
+    }
+    
+    // Word-based similarity
+    const words1 = norm1.split(/\s+/);
+    const words2 = norm2.split(/\s+/);
+    const commonWords = words1.filter(word => words2.includes(word));
+    const maxLength = Math.max(words1.length, words2.length);
+    
+    return maxLength > 0 ? commonWords.length / maxLength : 0;
   }
 }
